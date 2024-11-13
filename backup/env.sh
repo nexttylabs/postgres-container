@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# Pre-validate the environment
-if [ "${POSTGRES_DB}" = "**None**" -a "${POSTGRES_DB_FILE}" = "**None**" ]; then
-  echo "You need to set the POSTGRES_DB or POSTGRES_DB_FILE environment variable."
-  exit 1
-fi
 
 
 if [ "${POSTGRES_USER}" = "**None**" -a "${POSTGRES_USER_FILE}" = "**None**" ]; then
@@ -17,14 +12,6 @@ if [ "${POSTGRES_PASSWORD}" = "**None**" -a "${POSTGRES_PASSWORD_FILE}" = "**Non
 fi
 
 #Process vars
-if [ "${POSTGRES_DB_FILE}" = "**None**" ]; then
-  POSTGRES_DBS=$(echo "${POSTGRES_DB}" | tr , " ")
-elif [ -r "${POSTGRES_DB_FILE}" ]; then
-  POSTGRES_DBS=$(cat "${POSTGRES_DB_FILE}")
-else
-  echo "Missing POSTGRES_DB_FILE file."
-  exit 1
-fi
 if [ "${POSTGRES_USER_FILE}" = "**None**" ]; then
   export PGUSER="${POSTGRES_USER}"
 elif [ -r "${POSTGRES_USER_FILE}" ]; then

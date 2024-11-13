@@ -18,18 +18,11 @@ RUN set -x \
     && ln -s /bin/rm /usr/local/sbin/rm
 
 RUN set -x \
-    && mkdir -p /etc/postgresql \
-    && mkdir -p /etc/postgresql/ssl \
-    && mkdir -p /var/lib/postgresql/data/log
-
-RUN set -x \
     && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && curl --fail --retry 4 --retry-all-errors -o /usr/local/bin/go-cron.gz -L https://github.com/prodrigestivill/go-cron/releases/download/$GOCRONVER/go-cron-$TARGETOS-$TARGETARCH.gz \
     && gzip -vnd /usr/local/bin/go-cron.gz && chmod a+x /usr/local/bin/go-cron
 
-ENV POSTGRES_DB="**None**" \
-    POSTGRES_DB_FILE="**None**" \
-    POSTGRES_USER="**None**" \
+ENV POSTGRES_USER="**None**" \
     POSTGRES_USER_FILE="**None**" \
     POSTGRES_PASSWORD="**None**" \
     POSTGRES_PASSWORD_FILE="**None**" \
@@ -47,18 +40,13 @@ ENV POSTGRES_DB="**None**" \
     WEBHOOK_POST_BACKUP_URL="**None**" \
     WEBHOOK_EXTRA_ARGS=""
 
-COPY postgresql.conf /etc/postgresql/postgresql.conf
 COPY hooks /hooks
 COPY backup.sh env.sh init.sh /
 
 RUN set -x \
-    && chown -R postgres:postgres /etc/postgresql \
-    && chmod 600 /etc/postgresql/postgresql.conf \
-    && chown -R postgres:postgres /var/lib/postgresql/data \
-    && chmod 700 /var/lib/postgresql/data \
     && chmod +x /backup.sh /env.sh /init.sh
 
-VOLUME ["/backups", "/var/lib/postgresql/data"]
+VOLUME ["/backups"]
 
 ENTRYPOINT []
 CMD ["/init.sh"]
