@@ -1,0 +1,30 @@
+
+services:
+  postgres-server:
+      build:
+        context: .
+        dockerfile: Dockerfile
+        args:
+          BASETAG: "17"
+      environment:
+        - POSTGRES_PASSWORD=testpassword
+        - POSTGRES_USER=postgres
+        - POSTGRES_DB=testdb
+        - SCHEDULE=@hourly
+        - BACKUP_DIR=/backups
+        - BACKUP_KEEP_DAYS=7
+        - HEALTHCHECK_PORT=8080
+        - BACKUP_ON_START=TRUE
+      volumes:
+        - ./data:/var/lib/postgresql/data
+        - ./backups:/backups
+      ports:
+        - "5432:5432"
+        - "8080:8080"
+      restart: "no"
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+        interval: 5m
+        timeout: 3s
+        retries: 3
+        start_period: 30s

@@ -1,0 +1,12 @@
+[2024-11-13 07:10:19] Starting incremental backup: postgres-incremental-20241113-071019
+Starting incremental backup: postgres-incremental-20241113-071511
+Starting incremental backup: postgres-incremental-20241113-072209
+No manifest directory or empty manifest directory. Performing full backup instead.
+Starting full backup: postgres-full-20241113-072209
+Starting incremental backup: postgres-incremental-20241113-072537
+No manifest directory or empty manifest directory. Performing full backup instead.
+Starting full backup: postgres-full-20241113-072537
+Starting incremental backup: postgres-incremental-20241113-072600
+No manifest directory or empty manifest directory. Performing full backup instead.
+Starting full backup: postgres-full-20241113-072600
+Waiting for PostgreSQL to start...

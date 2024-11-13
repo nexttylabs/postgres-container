@@ -5,15 +5,6 @@ if [ "${POSTGRES_DB}" = "**None**" -a "${POSTGRES_DB_FILE}" = "**None**" ]; then
   exit 1
 fi
 
-if [ "${POSTGRES_HOST}" = "**None**" ]; then
-  if [ -n "${POSTGRES_PORT_5432_TCP_ADDR}" ]; then
-    POSTGRES_HOST=${POSTGRES_PORT_5432_TCP_ADDR}
-    POSTGRES_PORT=${POSTGRES_PORT_5432_TCP_PORT}
-  else
-    echo "You need to set the POSTGRES_HOST environment variable."
-    exit 1
-  fi
-fi
 
 if [ "${POSTGRES_USER}" = "**None**" -a "${POSTGRES_USER_FILE}" = "**None**" ]; then
   echo "You need to set the POSTGRES_USER or POSTGRES_USER_FILE environment variable."
@@ -52,7 +43,6 @@ else
   echo "Missing POSTGRES_PASSWORD_FILE or POSTGRES_PASSFILE_STORE file."
   exit 1
 fi
-export PGHOST="${POSTGRES_HOST}"
 export PGPORT="${POSTGRES_PORT}"
 KEEP_DAYS=${BACKUP_KEEP_DAYS}
 
