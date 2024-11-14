@@ -28,7 +28,6 @@ verify_backup() {
 
     pg_verifybackup \
         --manifest-path="$BACKUP_PATH/backup_manifest" \
-        --progress \
         "$BACKUP_PATH"
 
     if [ $? -eq 0 ]; then
@@ -50,8 +49,6 @@ full_backup() {
         -h $POSTGRES_HOST \
         -U $POSTGRES_USER \
         -D "$BACKUP_DIR/full/$BACKUP_NAME" \
-        -F tar \
-        -Z client-zstd \
         -X stream \
         --manifest-checksums=sha256 \
         --manifest-force-encode \
@@ -66,6 +63,9 @@ full_backup() {
         cp "$BACKUP_DIR/full/$BACKUP_NAME/backup_manifest" "$BACKUP_DIR/manifest/${BACKUP_NAME}_manifest"
         verify_backup "$BACKUP_DIR/full/$BACKUP_NAME" "full"
         echo "Full backup completed successfully"
+        cd  $BACKUP_DIR/full
+        tar cf - "$BACKUP_NAME" | zstd > "${BACKUP_NAME}.tar.zst" 
+        rm -rf "$BACKUP_NAME"
     else
         echo "Full backup failed with status $BACKUP_STATUS"
         exit 1
@@ -101,8 +101,6 @@ incremental_backup() {
         -h $POSTGRES_HOST \
         -U $POSTGRES_USER \
         -D "$BACKUP_DIR/incremental/$BACKUP_NAME" \
-        -F tar \
-        -Z client-zstd \
         -X stream \
         -i "$LATEST_FULL_MANIFEST" \
         --manifest-checksums=sha256 \
@@ -118,6 +116,9 @@ incremental_backup() {
         cp "$BACKUP_DIR/incremental/$BACKUP_NAME/backup_manifest" "$BACKUP_DIR/manifest/${BACKUP_NAME}_manifest"
         verify_backup "$BACKUP_DIR/incremental/$BACKUP_NAME" "incremental"
         echo "Incremental backup completed successfully"
+        cd  $BACKUP_DIR/incremental
+        tar cf - "$BACKUP_NAME" | zstd > "${BACKUP_NAME}.tar.zst" 
+        rm -rf "$BACKUP_NAME"
     else
         echo "Incremental backup failed with status $BACKUP_STATUS"
         exit 1
@@ -126,14 +127,13 @@ incremental_backup() {
 
 # 检查PostgreSQL服务是否运行（最多等待30秒）
 check_postgres_running() {
-    local max_attempts=60  # 最大尝试次数（30次，每次1秒）
+    local max_attempts=30  # 最大尝试次数（60次，每次1秒）
     local attempt=1
 
     echo "Waiting for PostgreSQL to start..."
 
     while [ $attempt -le $max_attempts ]; do
-        pg_isready -h $POSTGRES_HOST -U $POSTGRES_USER >/dev/null 2>&1
-        if [ $? -eq 0 ]; then
+        if PGPASSWORD=$POSTGRES_PASSWORD pg_isready -h $POSTGRES_HOST -U $POSTGRES_USER -d postgres -q; then
             echo "PostgreSQL is running and accepting connections"
             return 0
         fi
