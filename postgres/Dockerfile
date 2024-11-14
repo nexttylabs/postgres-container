@@ -18,13 +18,13 @@ RUN set -x \
 
 RUN set -x \
     && mkdir -p /etc/postgresql \
-    && mkdir -p /etc/postgresql/ssl \
-    && mkdir -p /var/lib/postgresql/data/log
+    && mkdir -p /etc/postgresql/ssl
 
-COPY postgresql.conf /etc/postgresql/postgresql.conf
+COPY postgresql.conf pg_hba.conf /etc/postgresql/
 
 RUN set -x \
     && chown -R postgres:postgres /etc/postgresql \
     && chmod 600 /etc/postgresql/postgresql.conf \
-    && chown -R postgres:postgres /var/lib/postgresql/data \
-    && chmod 700 /var/lib/postgresql/data
+    && chmod 600 /etc/postgresql/pg_hba.conf
+
+CMD ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]

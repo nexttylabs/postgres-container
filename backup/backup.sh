@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -Eeo pipefail
 
+if [ -n "$POSTGRES_PASSWORD" ]; then
+    export PGPASSWORD="$POSTGRES_PASSWORD"
+fi
+
 HOOKS_DIR="/hooks"
 if [ -d "${HOOKS_DIR}" ]; then
   on_error(){
@@ -15,6 +19,27 @@ source "$(dirname "$0")/env.sh"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 TODAY=$(date +%u)  # 获取星期几 (1-7)
 
+# 验证备份函数
+verify_backup() {
+    local BACKUP_PATH=$1
+    local BACKUP_TYPE=$2
+
+    echo "Verifying $BACKUP_TYPE backup: $(basename $BACKUP_PATH)"
+
+    pg_verifybackup \
+        --manifest-path="$BACKUP_PATH/backup_manifest" \
+        --progress \
+        "$BACKUP_PATH"
+
+    if [ $? -eq 0 ]; then
+        echo "Backup verification successful"
+        return 0
+    else
+        echo "Backup verification failed"
+        return 1
+    fi
+}
+
 # 完整备份函数
 full_backup() {
     BACKUP_NAME="${BACKUP_PREFIX}-full-${TIMESTAMP}"
@@ -26,19 +51,20 @@ full_backup() {
         -U $POSTGRES_USER \
         -D "$BACKUP_DIR/full/$BACKUP_NAME" \
         -F tar \
-        --compress=zstd \
-        --wal-method=stream \
+        -Z client-zstd \
+        -X stream \
         --manifest-checksums=sha256 \
         --manifest-force-encode \
-        --verbose \
-        --progress \
-        --label="full_backup_$TIMESTAMP"
+        -v \
+        -P \
+        -l "full_backup_$TIMESTAMP"
 
     BACKUP_STATUS=$?
 
     if [ $BACKUP_STATUS -eq 0 ]; then
         # 保存manifest文件
         cp "$BACKUP_DIR/full/$BACKUP_NAME/backup_manifest" "$BACKUP_DIR/manifest/${BACKUP_NAME}_manifest"
+        verify_backup "$BACKUP_DIR/full/$BACKUP_NAME" "full"
         echo "Full backup completed successfully"
     else
         echo "Full backup failed with status $BACKUP_STATUS"
@@ -76,21 +102,21 @@ incremental_backup() {
         -U $POSTGRES_USER \
         -D "$BACKUP_DIR/incremental/$BACKUP_NAME" \
         -F tar \
-        --compress=zstd \
-        --wal-method=stream \
-        --incremental \
-        --incremental-wal-summarize \
+        -Z client-zstd \
+        -X stream \
+        -i "$LATEST_FULL_MANIFEST" \
         --manifest-checksums=sha256 \
         --manifest-force-encode \
-        --verbose \
-        --progress \
-        --label="incremental_backup_$TIMESTAMP"
+        -v \
+        -P \
+        -l "incremental_backup_$TIMESTAMP"
 
     BACKUP_STATUS=$?
 
     if [ $BACKUP_STATUS -eq 0 ]; then
         # 保存manifest文件
         cp "$BACKUP_DIR/incremental/$BACKUP_NAME/backup_manifest" "$BACKUP_DIR/manifest/${BACKUP_NAME}_manifest"
+        verify_backup "$BACKUP_DIR/incremental/$BACKUP_NAME" "incremental"
         echo "Incremental backup completed successfully"
     else
         echo "Incremental backup failed with status $BACKUP_STATUS"
@@ -98,30 +124,9 @@ incremental_backup() {
     fi
 }
 
-# 验证备份函数
-verify_backup() {
-    local BACKUP_PATH=$1
-    local BACKUP_TYPE=$2
-
-    echo "Verifying $BACKUP_TYPE backup: $(basename $BACKUP_PATH)"
-
-    pg_verifybackup \
-        --manifest-path="$BACKUP_PATH/backup_manifest" \
-        --progress \
-        "$BACKUP_PATH"
-
-    if [ $? -eq 0 ]; then
-        echo "Backup verification successful"
-        return 0
-    else
-        echo "Backup verification failed"
-        return 1
-    fi
-}
-
 # 检查PostgreSQL服务是否运行（最多等待30秒）
 check_postgres_running() {
-    local max_attempts=30  # 最大尝试次数（30次，每次1秒）
+    local max_attempts=60  # 最大尝试次数（30次，每次1秒）
     local attempt=1
 
     echo "Waiting for PostgreSQL to start..."
@@ -156,10 +161,9 @@ main() {
     # 检查是否需要完整备份（每周日或首次运行）
     if [ "$TODAY" -eq 7 ] || [ ! -d "$BACKUP_DIR/full" ]; then
         full_backup
-        verify_backup "$BACKUP_DIR/full/${DB_NAME}-full-${TIMESTAMP}" "full"
+
     else
         incremental_backup
-        verify_backup "$BACKUP_DIR/incremental/${DB_NAME}-incremental-${TIMESTAMP}" "incremental"
     fi
 
     # Post-backup hook
