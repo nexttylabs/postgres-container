@@ -44,18 +44,31 @@ if [ "${S3_BUCKET}" = "**None**" ]; then
   echo "You need to set the S3_BUCKET environment variable."
   exit 1
 fi
-if [ "${S3_ENDPOINT}" = "**None**"  ]; then
+if [ "${S3_ENDPOINT}" = "**None**" -a "${S3_ENDPOINT_FILE}" = "**None**"  ]; then
   echo "You need to set the S3_ENDPOINT environment variable."
   exit 1
 fi
 
-if [ "${S3_ACCESS_KEY}" = "**None**" ]; then
+if [ "${S3_ENDPOINT_FILE}" != "**None**" ]; then
+  export S3_ENDPOINT=$(cat "${S3_ENDPOINT_FILE}")
+fi
+
+if [ "${S3_ACCESS_KEY}" = "**None**" -a "${S3_ACCESS_KEY_FILE}" = "**None**" ]; then
   echo "You need to set the S3_ACCESS_KEY environment variable."
   exit 1
 fi
 
-if [ "${S3_SECRET_KEY}" = "**None**" ]; then
+if [ "${S3_ACCESS_KEY_FILE}" != "**None**" ]; then
+  export S3_ACCESS_KEY=$(cat "${S3_ACCESS_KEY_FILE}")
+fi
+
+if [ "${S3_SECRET_KEY}" = "**None**" -a "${S3_SECRET_KEY_FILE}" = "**None**" ]; then
   echo "You need to set the S3_SECRET_KEY environment variable."
   exit 1
 fi
+
+if [ "${S3_SECRET_KEY_FILE}" != "**None**" ]; then
+  export S3_SECRET_KEY=$(cat "${S3_SECRET_KEY_FILE}")
+fi
+
 fi

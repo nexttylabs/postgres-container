@@ -119,6 +119,7 @@ incremental_backup() {
         cd  $BACKUP_DIR/incremental
         tar cf - "$BACKUP_NAME" | zstd > "${BACKUP_NAME}.tar.zst" 
         rm -rf "$BACKUP_NAME"
+
     else
         echo "Incremental backup failed with status $BACKUP_STATUS"
         exit 1
@@ -147,6 +148,26 @@ check_postgres_running() {
     exit 1
 }
 
+# 上传备份文件到S3
+upload_backups() {
+    local backup_type=$1
+    echo "Uploading ${backup_type} backups to S3..."
+    
+    # 检查并上传指定目录中的所有 .tar.zst 文件
+    find "$BACKUP_DIR/$backup_type" -name "*.tar.zst" -type f | while read file; do
+        if [ -f "$file" ]; then
+            echo "Uploading $file to S3..."
+            /upload.sh "$file"
+            if [ $? -eq 0 ]; then
+                echo "Successfully uploaded $file, removing local copy..."
+                rm "$file"
+            else
+                echo "Failed to upload $file, keeping local copy"
+            fi
+        fi
+    done
+}
+
 main() {
     # Pre-backup hook
     if [ -d "${HOOKS_DIR}" ]; then
@@ -161,9 +182,10 @@ main() {
     # 检查是否需要完整备份（每周日或首次运行）
     if [ "$TODAY" -eq 7 ] || [ ! -d "$BACKUP_DIR/full" ]; then
         full_backup
-
+        upload_backups "full"
     else
         incremental_backup
+        upload_backups "incremental"
     fi
 
     # Post-backup hook

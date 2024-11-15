@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -Eeo pipefail
 
-# Prevalidate configuration (don't source)
-/env.sh
+source /env.sh
 
 EXTRA_ARGS=""
 # Initial background backup

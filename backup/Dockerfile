@@ -48,10 +48,10 @@ ENV POSTGRES_USER="**None**" \
     S3_SECRET_KEY="**None**"
 
 COPY hooks /hooks
-COPY backup.sh env.sh init.sh /
+COPY backup.sh env.sh init.sh upload.sh /
 
 RUN set -x \
-    && chmod +x /backup.sh /env.sh /init.sh
+    && chmod +x /backup.sh /env.sh /init.sh /upload.sh
 
 VOLUME ["/backups"]
 

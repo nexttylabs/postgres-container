@@ -29,8 +29,17 @@ services:
         - BACKUP_DIR=/backups
         - HEALTHCHECK_PORT=8080
         - BACKUP_ON_START=TRUE
+        - STORAGE_TYPE=s3
+        - S3_ENDPOINT_FILE=/run/secrets/s3_endpoint
+        - S3_BUCKET=backup
+        - S3_ACCESS_KEY_FILE=/run/secrets/s3_access_key
+        - S3_SECRET_KEY_FILE=/run/secrets/s3_secret_key
       volumes:
         - backups:/backups
+      secrets:
+        - s3_endpoint
+        - s3_access_key
+        - s3_secret_key
       ports:
         - "8080:8080"
       depends_on:
@@ -46,3 +55,11 @@ services:
 volumes:
   data:
   backups:
+
+secrets:
+  s3_endpoint:
+    environment: S3_ENDPOINT
+  s3_access_key:
+    environment: S3_ACCESS_KEY
+  s3_secret_key:
+    environment: S3_SECRET_KEY

@@ -18,7 +18,7 @@ upload_to_s3() {
 
     # Upload file to S3
     echo "Uploading ${file} to s3://${S3_BUCKET}"
-    mc cp "${file}" "backup/${S3_BUCKET}/"
+    mc cp "${file}" "backup/${S3_BUCKET}/${BACKUP_PREFIX}/"
 
     if [ $? -eq 0 ]; then
         echo "Successfully uploaded ${file} to s3://${S3_BUCKET}"
