@@ -31,7 +31,6 @@ else
   exit 1
 fi
 export PGPORT="${POSTGRES_PORT}"
-KEEP_DAYS=${BACKUP_KEEP_DAYS}
 
 # Validate backup dir
 if [ '!' -d "${BACKUP_DIR}" -o '!' -w "${BACKUP_DIR}" -o '!' -x "${BACKUP_DIR}" ]; then

@@ -27,7 +27,6 @@ services:
         - POSTGRES_PASSWORD=testpassword
         - SCHEDULE=@hourly
         - BACKUP_DIR=/backups
-        - BACKUP_KEEP_DAYS=7
         - HEALTHCHECK_PORT=8080
         - BACKUP_ON_START=TRUE
       volumes:

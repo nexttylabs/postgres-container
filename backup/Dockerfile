@@ -32,7 +32,6 @@ ENV POSTGRES_USER="**None**" \
     BACKUP_DIR="/backups" \
     BACKUP_PREFIX="postgres" \
     BACKUP_SUFFIX=".zst" \
-    BACKUP_KEEP_DAYS=30 \
     HEALTHCHECK_PORT=8080 \
     WEBHOOK_URL="**None**" \
     WEBHOOK_ERROR_URL="**None**" \
