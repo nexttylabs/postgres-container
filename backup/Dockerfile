@@ -20,7 +20,10 @@ RUN set -x \
 RUN set -x \
     && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && curl --fail --retry 4 --retry-all-errors -o /usr/local/bin/go-cron.gz -L https://github.com/prodrigestivill/go-cron/releases/download/$GOCRONVER/go-cron-$TARGETOS-$TARGETARCH.gz \
-    && gzip -vnd /usr/local/bin/go-cron.gz && chmod a+x /usr/local/bin/go-cron
+    && gzip -vnd /usr/local/bin/go-cron.gz && chmod a+x /usr/local/bin/go-cron \
+    && curl https://dl.min.io/client/mc/release/linux-$TARGETARCH/mc -o /usr/local/bin/mc \
+    && chmod +x /usr/local/bin/mc
+
 
 ENV POSTGRES_USER="**None**" \
     POSTGRES_USER_FILE="**None**" \
@@ -37,7 +40,12 @@ ENV POSTGRES_USER="**None**" \
     WEBHOOK_ERROR_URL="**None**" \
     WEBHOOK_PRE_BACKUP_URL="**None**" \
     WEBHOOK_POST_BACKUP_URL="**None**" \
-    WEBHOOK_EXTRA_ARGS=""
+    WEBHOOK_EXTRA_ARGS="" \
+    STORAGE_TYPE="local" \
+    S3_ENDPOINT="**None**" \
+    S3_BUCKET="**None**" \
+    S3_ACCESS_KEY="**None**" \
+    S3_SECRET_KEY="**None**"
 
 COPY hooks /hooks
 COPY backup.sh env.sh init.sh /
