@@ -21,6 +21,14 @@ RUN set -x \
     && mkdir -p /etc/postgresql/ssl
 
 COPY postgresql.conf pg_hba.conf /etc/postgresql/
+COPY create_backup_user.sh /docker-entrypoint-initdb.d/
+
+# Support for Docker secrets and ensure proper permissions
+RUN set -x \
+    && mkdir -p /run/secrets \
+    && chown -R postgres:postgres /run/secrets \
+    && chown postgres:postgres /docker-entrypoint-initdb.d/create_backup_user.sh \
+    && chmod 755 /docker-entrypoint-initdb.d/create_backup_user.sh
 
 RUN set -x \
     && chown -R postgres:postgres /etc/postgresql \

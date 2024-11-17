@@ -2,6 +2,11 @@
 set -Eeo pipefail
 
 source /env.sh
+if [ "${STORAGE_TYPE}" = "s3" ]; then
+  mc alias set backup "${S3_ENDPOINT}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}"
+fi
+
+# Configure MinIO client
 
 EXTRA_ARGS=""
 # Initial background backup

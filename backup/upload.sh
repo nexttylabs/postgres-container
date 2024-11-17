@@ -12,10 +12,7 @@ upload_to_s3() {
         echo "Storage type is not s3, skipping upload"
         return 0
     fi
-
-    # Configure MinIO client
-    mc alias set backup "${S3_ENDPOINT}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}"
-
+    
     # Upload file to S3
     echo "Uploading ${file} to s3://${S3_BUCKET}"
     mc cp "${file}" "backup/${S3_BUCKET}/${BACKUP_PREFIX}/"
