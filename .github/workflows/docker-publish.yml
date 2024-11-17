@@ -1,0 +1,98 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "main" ]
+    # 当 tags 以 v 开头时触发工作流
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  # 设置 registry 地址
+  REGISTRY: ghcr.io
+  # github.repository 格式为 owner/repository
+  REPO_NAME: ${{ github.repository }}
+
+jobs:
+  build-postgres:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 登录到 GitHub Container Registry
+      - name: Log in to the Container registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 提取元数据（tags/labels）
+      - name: Extract metadata (tags, labels) for Postgres
+        id: meta-postgres
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.REPO_NAME }}/postgres
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      # 构建并推送 Postgres Docker 镜像
+      - name: Build and push Postgres Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./postgres
+          file: ./postgres/Dockerfile
+          push: true
+          tags: ${{ steps.meta-postgres.outputs.tags }}
+          labels: ${{ steps.meta-postgres.outputs.labels }}
+
+  build-backup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 登录到 GitHub Container Registry
+      - name: Log in to the Container registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 提取元数据（tags/labels）
+      - name: Extract metadata (tags, labels) for Backup
+        id: meta-backup
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.REPO_NAME }}/postgres-backup
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      # 构建并推送 Backup Docker 镜像
+      - name: Build and push Backup Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./backup
+          file: ./backup/Dockerfile
+          push: true
+          tags: ${{ steps.meta-backup.outputs.tags }}
+          labels: ${{ steps.meta-backup.outputs.labels }}
