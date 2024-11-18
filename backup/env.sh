@@ -21,13 +21,11 @@ else
   exit 1
 fi
 if [ "${POSTGRES_PASSWORD_FILE}" = "**None**" -a "${POSTGRES_PASSFILE_STORE}" = "**None**" ]; then
-  export PGPASSWORD="${POSTGRES_PASSWORD}"
-elif [ -r "${POSTGRES_PASSWORD_FILE}" ]; then
-  export PGPASSWORD=$(cat "${POSTGRES_PASSWORD_FILE}")
-elif [ -r "${POSTGRES_PASSFILE_STORE}" ]; then
-  export PGPASSFILE="${POSTGRES_PASSFILE_STORE}"
+  export POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
+elif [ "${POSTGRES_PASSWORD_FILE}" != "**None**" ]; then
+  export POSTGRES_PASSWORD=$(cat "${POSTGRES_PASSWORD_FILE}")
 else
-  echo "Missing POSTGRES_PASSWORD_FILE or POSTGRES_PASSFILE_STORE file."
+  echo "Missing POSTGRES_PASSWORD_FILE or PGPASSWORD enviroment variable."
   exit 1
 fi
 export PGPORT="${POSTGRES_PORT}"
