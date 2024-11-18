@@ -20,7 +20,7 @@ else
   echo "Missing POSTGRES_USER_FILE file."
   exit 1
 fi
-if [ "${POSTGRES_PASSWORD_FILE}" = "**None**" -a "${POSTGRES_PASSFILE_STORE}" = "**None**" ]; then
+if [ "${POSTGRES_PASSWORD_FILE}" = "**None**" ]; then
   export POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
 elif [ "${POSTGRES_PASSWORD_FILE}" != "**None**" ]; then
   export POSTGRES_PASSWORD=$(cat "${POSTGRES_PASSWORD_FILE}")
