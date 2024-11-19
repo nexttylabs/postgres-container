@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     postgresql-server-dev-all \
-    && git clone --branch ${PGVECTOR_VERSION} https://github.com/pgvector/pgvector.git \
+    && git -c http.sslVerify=false clone --branch ${PGVECTOR_VERSION} https://github.com/pgvector/pgvector.git \
     && cd pgvector \
     && make \
     && make install \
