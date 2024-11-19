@@ -26,9 +26,7 @@ RUN set -x \
 
 
 ENV POSTGRES_USER="**None**" \
-    POSTGRES_USER_FILE="**None**" \
     POSTGRES_PASSWORD="**None**" \
-    POSTGRES_PASSWORD_FILE="**None**" \
     SCHEDULE="@hourly" \
     BACKUP_ON_START="FALSE" \
     BACKUP_DIR="/backups" \
