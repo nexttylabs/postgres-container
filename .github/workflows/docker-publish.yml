@@ -40,11 +40,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.REPO_NAME }}/postgres
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=sha
+            type=raw,value=17
+            type=raw,value=17-pgvector
 
       # 构建并推送 Postgres Docker 镜像
       - name: Build and push Postgres Docker image
@@ -52,6 +50,9 @@ jobs:
         with:
           context: ./postgres
           file: ./postgres/Dockerfile
+          build-args: |
+            BASETAG=17
+            PGVECTOR_VERSION=v0.8.0
           push: true
           tags: ${{ steps.meta-postgres.outputs.tags }}
           labels: ${{ steps.meta-postgres.outputs.labels }}
@@ -81,10 +82,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.REPO_NAME }}/postgres-backup
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=17
             type=sha
 
       # 构建并推送 Backup Docker 镜像
@@ -93,6 +91,8 @@ jobs:
         with:
           context: ./backup
           file: ./backup/Dockerfile
+          build-args: |
+            BASETAG=17
           push: true
           tags: ${{ steps.meta-backup.outputs.tags }}
           labels: ${{ steps.meta-backup.outputs.labels }}
