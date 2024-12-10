@@ -19,6 +19,32 @@ source "$(dirname "$0")/env.sh"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 TODAY=$(date +%u)  # 获取星期几 (1-7)
 
+# 检查是否需要执行全量备份
+need_full_backup() {
+    # 检查是否是周日
+    if [ "$TODAY" -eq 7 ]; then
+        return 0
+    fi
+    
+    # 检查是否存在全量备份
+    if ! compgen -G "$BACKUP_DIR/manifest/*full*" > /dev/null; then
+        return 0
+    fi
+    
+    # 检查最近的全量备份是否超过7天
+    local latest_full=$(ls -t "$BACKUP_DIR/manifest"/*full* 2>/dev/null | head -n 1)
+    if [ -n "$latest_full" ]; then
+        local backup_date=$(basename "$latest_full" | grep -o '[0-9]\{8\}')
+        local today_date=$(date +%Y%m%d)
+        local days_diff=$(( ( $(date -j -f %Y%m%d "$today_date" +%s) - $(date -j -f %Y%m%d "$backup_date" +%s) ) / 86400 ))
+        if [ "$days_diff" -ge 7 ]; then
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
 # 验证备份函数
 verify_backup() {
     local BACKUP_PATH=$1
@@ -210,8 +236,8 @@ main() {
 
     check_postgres_running
 
-    # 检查是否需要完整备份（每周日或首次运行）
-    if [ "$TODAY" -eq 7 ] || [ ! -d "$BACKUP_DIR/full" ]; then
+    # 使用新的备份策略判断函数
+    if need_full_backup; then
         full_backup
         upload_backups "full"
     else
