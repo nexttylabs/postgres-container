@@ -153,19 +153,50 @@ upload_backups() {
     local backup_type=$1
     echo "Uploading ${backup_type} backups to S3..."
     
-    # 检查并上传指定目录中的所有 .tar.zst 文件
-    find "$BACKUP_DIR/$backup_type" -name "*.tar.zst" -type f | while read file; do
-        if [ -f "$file" ]; then
-            echo "Uploading $file to S3..."
-            /upload.sh "$file"
-            if [ $? -eq 0 ]; then
-                echo "Successfully uploaded $file, removing local copy..."
-                rm "$file"
-            else
-                echo "Failed to upload $file, keeping local copy"
+    if [ "$backup_type" = "full" ]; then
+        # 处理全量备份
+        find "$BACKUP_DIR/full" -name "*.tar.zst" -type f | while read file; do
+            if [ -f "$file" ]; then
+                # 从文件名中提取时间戳
+                local timestamp=$(basename "$file" | grep -o '[0-9]\{8\}-[0-9]\{6\}')
+                local s3_dir="backups/${timestamp}"
+                
+                echo "Uploading full backup $file to S3 directory: $s3_dir"
+                S3_PREFIX="$s3_dir" /upload.sh "$file"
+                
+                if [ $? -eq 0 ]; then
+                    echo "Successfully uploaded $file, removing local copy..."
+                    rm "$file"
+                else
+                    echo "Failed to upload $file, keeping local copy"
+                fi
             fi
-        fi
-    done
+        done
+    else
+        # 处理增量备份
+        find "$BACKUP_DIR/incremental" -name "*.tar.zst" -type f | while read file; do
+            if [ -f "$file" ]; then
+                # 获取最近的全量备份时间戳
+                local latest_full=$(ls -t "$BACKUP_DIR/manifest"/*full* 2>/dev/null | head -n 1)
+                if [ -n "$latest_full" ]; then
+                    local full_timestamp=$(basename "$latest_full" | grep -o '[0-9]\{8\}-[0-9]\{6\}')
+                    local s3_dir="backups/${full_timestamp}"
+                    
+                    echo "Uploading incremental backup $file to S3 directory: $s3_dir"
+                    S3_PREFIX="$s3_dir" /upload.sh "$file"
+                    
+                    if [ $? -eq 0 ]; then
+                        echo "Successfully uploaded $file, removing local copy..."
+                        rm "$file"
+                    else
+                        echo "Failed to upload $file, keeping local copy"
+                    fi
+                else
+                    echo "No full backup found for reference, skipping upload of $file"
+                fi
+            fi
+        done
+    fi
 }
 
 main() {
