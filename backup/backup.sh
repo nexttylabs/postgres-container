@@ -36,7 +36,9 @@ need_full_backup() {
     if [ -n "$latest_full" ]; then
         local backup_date=$(basename "$latest_full" | grep -o '[0-9]\{8\}')
         local today_date=$(date +%Y%m%d)
-        local days_diff=$(( ( $(date -j -f %Y%m%d "$today_date" +%s) - $(date -j -f %Y%m%d "$backup_date" +%s) ) / 86400 ))
+        local backup_formatted="${backup_date:0:4}-${backup_date:4:2}-${backup_date:6:2}"
+        local today_formatted="${today_date:0:4}-${today_date:4:2}-${today_date:6:2}"
+        local days_diff=$(( ($(date +%s -d "$today_formatted") - $(date +%s -d "$backup_formatted")) / 86400 ))
         if [ "$days_diff" -ge 7 ]; then
             return 0
         fi
