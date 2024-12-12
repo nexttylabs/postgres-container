@@ -30,9 +30,9 @@ upload_to_s3() {
         if [ -f "$BACKUP_DIR/latest_full_backup_timestamp" ]; then
             dir_timestamp=$(cat "$BACKUP_DIR/latest_full_backup_timestamp")
         else
-            # 如果找不到全量备份时间戳文件，使用文件自己的时间戳（不应该发生）
-            echo "Warning: Cannot find latest full backup timestamp, using file's own timestamp"
-            dir_timestamp=$(basename "$file" | grep -o '[0-9]\{8\}-[0-9]\{6\}')
+            # 如果找不到全量备份时间戳文件，这是一个错误状态
+            echo "Error: Cannot find latest full backup timestamp file. A full backup is required."
+            exit 1
         fi
     fi
     

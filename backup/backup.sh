@@ -19,8 +19,22 @@ source "$(dirname "$0")/env.sh"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 TODAY=$(date +%u)  # 获取星期几 (1-7)
 
+# 检查是否存在全量备份时间戳文件
+check_full_backup_timestamp() {
+    if [ ! -f "$BACKUP_DIR/latest_full_backup_timestamp" ]; then
+        echo "No full backup timestamp file found. Forcing full backup..."
+        return 0
+    fi
+    return 1
+}
+
 # 检查是否需要执行全量备份
 need_full_backup() {
+    # 检查是否存在全量备份时间戳文件
+    if check_full_backup_timestamp; then
+        return 0
+    fi
+    
     # 检查是否是周日
     if [ "$TODAY" -eq 7 ]; then
         return 0
@@ -241,7 +255,13 @@ main() {
 
     check_postgres_running
 
-    # 使用新的备份策略判断函数
+    # 如果找不到全量备份时间戳文件，强制执行全量备份
+    if check_full_backup_timestamp; then
+        full_backup
+        exit 0
+    fi
+
+    # 判断是否需要执行全量备份
     if need_full_backup; then
         full_backup
         upload_backups "full"
