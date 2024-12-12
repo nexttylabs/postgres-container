@@ -25,7 +25,8 @@ upload_to_s3() {
         # 如果是全量备份，使用自己的时间戳
         dir_timestamp=$(basename "$file" | grep -o '[0-9]\{8\}-[0-9]\{6\}')
     else
-        # 如果是增量备份，使用最近的全量备份时间戳
+        # 如果是增量备份，使用其基于的全量备份时间戳
+        # 读取备份开始时最近的全量备份时间戳
         if [ -f "$BACKUP_DIR/latest_full_backup_timestamp" ]; then
             dir_timestamp=$(cat "$BACKUP_DIR/latest_full_backup_timestamp")
         else
@@ -36,7 +37,14 @@ upload_to_s3() {
     fi
     
     # 构建S3路径
-    local s3_path="backup/${S3_BUCKET}/${BACKUP_PREFIX}/${dir_timestamp}/${backup_type}/$(basename "$file")"
+    # 根据备份类型确定最终的S3路径
+    if [ "$backup_type" = "full" ]; then
+        # 全量备份使用自己的时间戳作为目录
+        local s3_path="backup/${S3_BUCKET}/${BACKUP_PREFIX}/${dir_timestamp}/$(basename "$file")"
+    else
+        # 增量备份放在对应全量备份目录下的incremental子目录中
+        local s3_path="backup/${S3_BUCKET}/${BACKUP_PREFIX}/${dir_timestamp}/incremental/$(basename "$file")"
+    fi
     
     # Upload file to S3
     echo "Uploading ${file} to ${s3_path}"
