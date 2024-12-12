@@ -255,12 +255,6 @@ main() {
 
     check_postgres_running
 
-    # 如果找不到全量备份时间戳文件，强制执行全量备份
-    if check_full_backup_timestamp; then
-        full_backup
-        exit 0
-    fi
-
     # 判断是否需要执行全量备份
     if need_full_backup; then
         full_backup
