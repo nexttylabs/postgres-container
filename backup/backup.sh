@@ -72,6 +72,9 @@ full_backup() {
     BACKUP_NAME="${BACKUP_PREFIX}-full-${TIMESTAMP}"
     echo "Starting full backup: $BACKUP_NAME"
 
+    # 记录当前全量备份的时间戳到文件
+    echo "${TIMESTAMP}" > "$BACKUP_DIR/latest_full_backup_timestamp"
+
     # 使用pg_basebackup的内置zstd压缩
     pg_basebackup \
         -h $POSTGRES_HOST \
