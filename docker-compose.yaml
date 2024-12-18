@@ -1,65 +1,67 @@
+
 services:
   postgres:
-      build:
-        context: ./postgres
-        dockerfile: Dockerfile
-        args:
-          BASETAG: "17"
-      environment:
-        - POSTGRES_PASSWORD=testpassword
-        - POSTGRES_USER=postgres
-        - POSTGRES_DB=testdb
-        - BACKUP_USER_PASSWORD=backup_password
-      volumes:
-        - data:/var/lib/postgresql/data
-      ports:
-        - "5432:5432"
-      restart: "no"
+    build:
+      context: ./postgres
+      dockerfile: Dockerfile
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      BACKUP_USER_PASSWORD: backup123
+      POSTGRES_DB: testdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
   backup:
-      build:
-        context: ./backup
-        dockerfile: Dockerfile
-        args:
-          BASETAG: "17"
-      environment:
-        - POSTGRES_HOST=postgres
-        - POSTGRES_USER=backup_user
-        - POSTGRES_PASSWORD=backup_password
-        - SCHEDULE=@hourly
-        - BACKUP_DIR=/backups
-        - HEALTHCHECK_PORT=8080
-        - BACKUP_ON_START=TRUE
-        - STORAGE_TYPE=s3
-        - S3_ENDPOINT_FILE=/run/secrets/s3_endpoint
-        - S3_BUCKET=backup
-        - S3_ACCESS_KEY_FILE=/run/secrets/s3_access_key
-        - S3_SECRET_KEY_FILE=/run/secrets/s3_secret_key
-      volumes:
-        - backups:/backups
-      secrets:
-        - s3_endpoint
-        - s3_access_key
-        - s3_secret_key
-      ports:
-        - "8080:8080"
-      depends_on:
-        - postgres
-      restart: "no"
-      healthcheck:
-        test: ["CMD", "curl", "-f", "http://localhost:8080/"]
-        interval: 5m
-        timeout: 3s
-        retries: 3
-        start_period: 30s
+    build:
+      context: ./backup
+      dockerfile: Dockerfile
+    command: ["sh", "-c", "while true; do ./backup.sh; sleep 86400; done"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: backup_user
+      POSTGRES_PASSWORD: backup123
+      BACKUP_DIR: /backups
+      FULL_BACKUP_INTERVAL: "7"
+      S3_BUCKET: backups
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      STORAGE_TYPE: s3
+    volumes:
+      - backup_data:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
 volumes:
-  data:
-  backups:
-
-secrets:
-  s3_endpoint:
-    environment: S3_ENDPOINT
-  s3_access_key:
-    environment: S3_ACCESS_KEY
-  s3_secret_key:
-    environment: S3_SECRET_KEY
+  postgres_data:
+  minio_data:
+  backup_data:

@@ -5,57 +5,60 @@ if [ -n "$POSTGRES_PASSWORD" ]; then
     export PGPASSWORD="$POSTGRES_PASSWORD"
 fi
 
-HOOKS_DIR="/hooks"
-if [ -d "${HOOKS_DIR}" ]; then
-  on_error(){
-    run-parts -a "error" "${HOOKS_DIR}"
-  }
-  trap 'on_error' ERR
-fi
-
+# 加载环境变量
 source "$(dirname "$0")/env.sh"
 
 # 获取当前时间戳
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-TODAY=$(date +%u)  # 获取星期几 (1-7)
+TODAY=$(date +%Y%m%d)
 
-# 检查是否存在全量备份时间戳文件
-check_full_backup_timestamp() {
-    if [ ! -f "$BACKUP_DIR/latest_full_backup_timestamp" ]; then
-        echo "No full backup timestamp file found. Forcing full backup..."
-        return 0
-    fi
-    return 1
+# 创建必要的目录
+mkdir -p "$BACKUP_DIR/manifest"
+mkdir -p "$BACKUP_DIR/files"
+BACKUP_FILES_DIR="$BACKUP_DIR/files"
+LAST_TIMESTAMP_FILE="$BACKUP_DIR/manifest/last_timestamp"
+
+# 检查PostgreSQL服务是否运行
+check_postgres_running() {
+    local max_attempts=30
+    local attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        if pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" >/dev/null 2>&1; then
+            echo "PostgreSQL is running"
+            return 0
+        fi
+        echo "Waiting for PostgreSQL to start... (attempt $attempt/$max_attempts)"
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+    
+    echo "PostgreSQL did not start within $max_attempts seconds"
+    exit 1
 }
 
 # 检查是否需要执行全量备份
 need_full_backup() {
-    # 检查是否存在全量备份时间戳文件
-    if check_full_backup_timestamp; then
+    # 如果时间戳文件不存在，需要执行全量备份
+    if [ ! -f "$LAST_TIMESTAMP_FILE" ]; then
+        echo "No last full backup timestamp found, performing full backup..."
         return 0
     fi
     
-    # 检查是否是周日
-    if [ "$TODAY" -eq 7 ]; then
-        return 0
-    fi
+    # 读取上次全量备份的时间戳
+    local last_backup_date=$(cat "$LAST_TIMESTAMP_FILE")
     
-    # 检查是否存在全量备份
-    if ! compgen -G "$BACKUP_DIR/manifest/*full*" > /dev/null; then
-        return 0
-    fi
+    # 计算距离上次全量备份的天数
+    local last_date_seconds=$(date -d "${last_backup_date}" +%s)
+    local today_seconds=$(date -d "${TODAY}" +%s)
+    local days_diff=$(( (today_seconds - last_date_seconds) / 86400 ))
     
-    # 检查最近的全量备份是否超过7天
-    local latest_full=$(ls -t "$BACKUP_DIR/manifest"/*full* 2>/dev/null | head -n 1)
-    if [ -n "$latest_full" ]; then
-        local backup_date=$(basename "$latest_full" | grep -o '[0-9]\{8\}')
-        local today_date=$(date +%Y%m%d)
-        local backup_formatted="${backup_date:0:4}-${backup_date:4:2}-${backup_date:6:2}"
-        local today_formatted="${today_date:0:4}-${today_date:4:2}-${today_date:6:2}"
-        local days_diff=$(( ($(date +%s -d "$today_formatted") - $(date +%s -d "$backup_formatted")) / 86400 ))
-        if [ "$days_diff" -ge 7 ]; then
-            return 0
-        fi
+    echo "Days since last full backup: $days_diff"
+    
+    # 如果超过配置的间隔天数，需要执行全量备份
+    if [ "$days_diff" -ge "${FULL_BACKUP_INTERVAL}" ]; then
+        echo "Last full backup is older than ${FULL_BACKUP_INTERVAL} days, performing full backup..."
+        return 0
     fi
     
     return 1
@@ -81,195 +84,115 @@ verify_backup() {
     fi
 }
 
-# 完整备份函数
+# 执行全量备份
 full_backup() {
-    BACKUP_NAME="${BACKUP_PREFIX}-full-${TIMESTAMP}"
-    echo "Starting full backup: $BACKUP_NAME"
-
-    # 记录当前全量备份的时间戳到文件
-    echo "${TIMESTAMP}" > "$BACKUP_DIR/latest_full_backup_timestamp"
-
-    # 使用pg_basebackup的内置zstd压缩
+    echo "Performing full backup..."
+    local backup_name="${BACKUP_PREFIX}-full-${TIMESTAMP}"
+    local backup_path="$BACKUP_FILES_DIR/$TODAY"
+    # 使用pg_basebackup执行全量备份
     pg_basebackup \
         -h $POSTGRES_HOST \
         -U $POSTGRES_USER \
-        -D "$BACKUP_DIR/full/$BACKUP_NAME" \
+        -D "$backup_path/$backup_name" \
         -X stream \
         --manifest-checksums=sha256 \
         --manifest-force-encode \
         -v \
         -P \
         -l "full_backup_$TIMESTAMP"
-
-    BACKUP_STATUS=$?
-
-    if [ $BACKUP_STATUS -eq 0 ]; then
-        # 保存manifest文件
-        cp "$BACKUP_DIR/full/$BACKUP_NAME/backup_manifest" "$BACKUP_DIR/manifest/${BACKUP_NAME}_manifest"
-        verify_backup "$BACKUP_DIR/full/$BACKUP_NAME" "full"
+    
+    # 检查备份是否成功
+    if [ $? -eq 0 ]; then
+        cp "$backup_path/$backup_name/backup_manifest" "$BACKUP_DIR/manifest/last_manifest"
+        verify_backup "$backup_path/$backup_name" "full"
         echo "Full backup completed successfully"
-        cd  $BACKUP_DIR/full
-        tar cf - "$BACKUP_NAME" | zstd > "${BACKUP_NAME}.tar.zst" 
-        rm -rf "$BACKUP_NAME"
+        cd $backup_path 
+        tar cf - "$backup_name" | zstd > "${backup_name}.tar.zst" 
+        rm -rf "$backup_name"
+        # 更新最后一次全量备份的时间戳
+        echo "$TODAY" > "$LAST_TIMESTAMP_FILE"
     else
-        echo "Full backup failed with status $BACKUP_STATUS"
+        echo "Full backup failed"
+        rm -rf "$backup_path"
         exit 1
     fi
 }
 
-# 增量备份函数
+# 执行增量备份
 incremental_backup() {
-    BACKUP_NAME="${BACKUP_PREFIX}-incremental-${TIMESTAMP}"
-    echo "Starting incremental backup: $BACKUP_NAME"
-
-    # 检查manifest目录是否为空
-    if [ ! -d "$BACKUP_DIR/manifest" ] || [ -z "$(ls -A $BACKUP_DIR/manifest 2>/dev/null)" ]; then
-        echo "No manifest directory or empty manifest directory. Performing full backup instead."
+    echo "Performing incremental backup..."
+    # 获取最近的全量备份WAL位置
+    local last_manifest=$(ls -t "$BACKUP_DIR/manifest"/last_manifest 2>/dev/null | head -n 1)
+    if [ -z "$last_manifest" ]; then
+        echo "No full backup found, performing full backup instead..."
         full_backup
         return
     fi
+    local last_backup_date=$(cat "$LAST_TIMESTAMP_FILE")
 
-    # 安全地获取最近的全量备份WAL位置
-    LATEST_FULL_MANIFEST=""
-    if compgen -G "$BACKUP_DIR/manifest/*full*" > /dev/null; then
-        LATEST_FULL_MANIFEST=$(ls -t "$BACKUP_DIR/manifest"/*full* 2>/dev/null | head -n 1)
-    fi
-
-    if [ -z "$LATEST_FULL_MANIFEST" ]; then
-        echo "No full backup manifest found. Performing full backup instead."
-        full_backup
-        return
-    fi
-
+    local backup_path="$BACKUP_FILES_DIR/$last_backup_date/incremental"
+    local backup_name="${BACKUP_PREFIX}-incremental-${TIMESTAMP}"
+    mkdir -p "$backup_path"
+    
     # 使用pg_basebackup的增量备份功能
     pg_basebackup \
         -h $POSTGRES_HOST \
         -U $POSTGRES_USER \
-        -D "$BACKUP_DIR/incremental/$BACKUP_NAME" \
+        -D "$backup_path/$backup_name" \
         -X stream \
-        -i "$LATEST_FULL_MANIFEST" \
+        -i "$last_manifest" \
         --manifest-checksums=sha256 \
         --manifest-force-encode \
         -v \
         -P \
         -l "incremental_backup_$TIMESTAMP"
-
-    BACKUP_STATUS=$?
-
-    if [ $BACKUP_STATUS -eq 0 ]; then
-        # 保存manifest文件
-        cp "$BACKUP_DIR/incremental/$BACKUP_NAME/backup_manifest" "$BACKUP_DIR/manifest/${BACKUP_NAME}_manifest"
-        verify_backup "$BACKUP_DIR/incremental/$BACKUP_NAME" "incremental"
+    
+    # 检查备份是否成功
+    if [ $? -eq 0 ]; then
+        cp "$backup_path/$backup_name/backup_manifest" "$BACKUP_DIR/manifest/last_manifest"
+        verify_backup "$backup_path/$backup_name" "incremental"
         echo "Incremental backup completed successfully"
-        cd  $BACKUP_DIR/incremental
-        tar cf - "$BACKUP_NAME" | zstd > "${BACKUP_NAME}.tar.zst" 
-        rm -rf "$BACKUP_NAME"
-
+        cd  $backup_path
+        tar cf - "$backup_name" | zstd > "${backup_name}.tar.zst" 
+        rm -rf "$backup_name"
     else
-        echo "Incremental backup failed with status $BACKUP_STATUS"
+        echo "Incremental backup failed"
+        rm -rf "$backup_path"
         exit 1
     fi
 }
 
-# 检查PostgreSQL服务是否运行（最多等待30秒）
-check_postgres_running() {
-    local max_attempts=30  # 最大尝试次数（60次，每次1秒）
-    local attempt=1
-
-    echo "Waiting for PostgreSQL to start..."
-
-    while [ $attempt -le $max_attempts ]; do
-        if PGPASSWORD=$POSTGRES_PASSWORD pg_isready -h $POSTGRES_HOST -U $POSTGRES_USER -d postgres -q; then
-            echo "PostgreSQL is running and accepting connections"
-            return 0
-        fi
-
-        echo "Attempt $attempt/$max_attempts: PostgreSQL is not ready yet..."
-        sleep 1
-        attempt=$((attempt + 1))
-    done
-
-    echo "ERROR: PostgreSQL did not start within 30 seconds"
-    exit 1
-}
-
-# 上传备份文件到S3
+# 上传备份到对象存储
 upload_backups() {
-    local backup_type=$1
-    echo "Uploading ${backup_type} backups to S3..."
-    
-    if [ "$backup_type" = "full" ]; then
-        # 处理全量备份
-        find "$BACKUP_DIR/full" -name "*.tar.zst" -type f | while read file; do
-            if [ -f "$file" ]; then
-                # 从文件名中提取时间戳
-                local timestamp=$(basename "$file" | grep -o '[0-9]\{8\}-[0-9]\{6\}')
-                local s3_dir="backups/${timestamp}"
-                
-                echo "Uploading full backup $file to S3 directory: $s3_dir"
-                S3_PREFIX="$s3_dir" /upload.sh "$file"
-                
-                if [ $? -eq 0 ]; then
-                    echo "Successfully uploaded $file, removing local copy..."
-                    rm "$file"
-                else
-                    echo "Failed to upload $file, keeping local copy"
-                fi
-            fi
-        done
-    else
-        # 处理增量备份
-        find "$BACKUP_DIR/incremental" -name "*.tar.zst" -type f | while read file; do
-            if [ -f "$file" ]; then
-                # 获取最近的全量备份时间戳
-                local latest_full=$(ls -t "$BACKUP_DIR/manifest"/*full* 2>/dev/null | head -n 1)
-                if [ -n "$latest_full" ]; then
-                    local full_timestamp=$(basename "$latest_full" | grep -o '[0-9]\{8\}-[0-9]\{6\}')
-                    local s3_dir="backups/${full_timestamp}"
-                    
-                    echo "Uploading incremental backup $file to S3 directory: $s3_dir"
-                    S3_PREFIX="$s3_dir" /upload.sh "$file"
-                    
-                    if [ $? -eq 0 ]; then
-                        echo "Successfully uploaded $file, removing local copy..."
-                        rm "$file"
-                    else
-                        echo "Failed to upload $file, keeping local copy"
-                    fi
-                else
-                    echo "No full backup found for reference, skipping upload of $file"
-                fi
-            fi
-        done
+    if [ "${STORAGE_TYPE}" = "s3" ]; then
+        mc alias set remote_storage "${S3_ENDPOINT}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}"
+        echo "Uploading backup to S3..."
+        # 使用mc命令上传到MinIO
+        mc cp --recursive $BACKUP_FILES_DIR/* remote_storage/$S3_BUCKET/$BACKUP_PREFIX/
+        if [ $? -eq 0 ]; then
+            echo "Backup upload successful, cleaning up local files..."
+            # 删除已同步的备份文件
+            rm -rf "$BACKUP_FILES_DIR"/*
+            echo "Local backup files cleaned up"
+        else
+            echo "Backup upload failed, keeping local files"
+            exit 1
+        fi
     fi
 }
 
 main() {
-    # Pre-backup hook
-    if [ -d "${HOOKS_DIR}" ]; then
-      run-parts -a "pre-backup" --exit-on-error "${HOOKS_DIR}"
-    fi
-
-    #Initialize dirs
-    mkdir -p "$BACKUP_DIR"/{full,incremental,manifest}
-
     check_postgres_running
-
-    # 判断是否需要执行全量备份
+    
+    # 根据时间戳判断是否需要执行全量备份
     if need_full_backup; then
         full_backup
-        upload_backups "full"
     else
         incremental_backup
-        upload_backups "incremental"
     fi
-
-    # Post-backup hook
-    if [ -d "${HOOKS_DIR}" ]; then
-      run-parts -a "post-backup" --reverse --exit-on-error "${HOOKS_DIR}"
-    fi
+    
+    upload_backups
 }
-
 
 # 执行主逻辑
 main
