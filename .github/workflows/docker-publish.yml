@@ -48,6 +48,7 @@ jobs:
       - name: Build and push Postgres Docker image
         uses: docker/build-push-action@v6
         with:
+          platforms: linux/amd64,linux/arm64
           context: ./postgres
           file: ./postgres/Dockerfile
           build-args: |
@@ -89,6 +90,7 @@ jobs:
       - name: Build and push Backup Docker image
         uses: docker/build-push-action@v6
         with:
+          platforms: linux/amd64,linux/arm64
           context: ./backup
           file: ./backup/Dockerfile
           build-args: |
