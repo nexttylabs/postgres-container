@@ -250,7 +250,7 @@ StatefulSet: postgres
 [SUCCESS] PostgreSQL服务已就绪
 
 [INFO] 验证PostgreSQL版本...
-PostgreSQL版本: PostgreSQL 16.1
+PostgreSQL版本: PostgreSQL 17
 
 [INFO] 验证数据库列表...
 数据库列表:

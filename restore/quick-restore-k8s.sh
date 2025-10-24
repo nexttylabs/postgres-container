@@ -22,7 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_NAMESPACE="postgres"
 DEFAULT_STATEFULSET_NAME="postgres"
 RESTORE_JOB_NAME="postgres-restore-$(date +%s)"
-RESTORE_IMAGE="bitnami/postgresql:16"
+RESTORE_IMAGE="postgres:17"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -49,6 +49,7 @@ REMOTE_S3_MODE="false"
 S3_ENDPOINT_URL=""
 S3_ACCESS_KEY=""
 S3_SECRET_KEY=""
+JOB_CREATED="false"
 
 # 日志函数
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
@@ -69,6 +70,17 @@ EOF
     echo "Version: $VERSION - 零本地依赖"
     echo ""
 }
+
+# 清理 Job
+cleanup_job() {
+    if [ "$JOB_CREATED" = "true" ]; then
+        log_info "清理还原 Job..."
+        kubectl delete job "$RESTORE_JOB_NAME" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+        JOB_CREATED="false"
+    fi
+}
+
+trap cleanup_job EXIT
 
 # 检查依赖（仅检查kubectl）
 check_dependencies() {
@@ -393,6 +405,32 @@ create_restore_job() {
     
     log_info "创建还原 Job: $RESTORE_JOB_NAME"
     
+    log_info "解析 PostgreSQL PVC..."
+    local pvc_name=""
+    pvc_name=$(kubectl get pvc -n "$NAMESPACE" -l "$POSTGRES_POD_LABEL" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    
+    if [ -z "$pvc_name" ]; then
+        local volume_name=""
+        volume_name=$(kubectl get statefulset "$STATEFULSET_NAME" -n "$NAMESPACE" \
+            -o jsonpath='{.spec.volumeClaimTemplates[0].metadata.name}' 2>/dev/null || true)
+        
+        if [ -z "$volume_name" ]; then
+            volume_name="data"
+        fi
+        
+        pvc_name="${volume_name}-${STATEFULSET_NAME}-0"
+        
+        if ! kubectl get pvc "$pvc_name" -n "$NAMESPACE" >/dev/null 2>&1; then
+            log_error "找不到 PVC $pvc_name"
+            log_info "可用的 PVC 列表:"
+            kubectl get pvc -n "$NAMESPACE"
+            exit 1
+        fi
+    fi
+    
+    log_info "使用 PVC: $pvc_name"
+    
     # 准备 S3 配置
     local s3_config=""
     if [ "$REMOTE_S3_MODE" = "true" ]; then
@@ -457,6 +495,8 @@ spec:
           value: "${INCREMENTAL_BACKUP}"
         - name: APPLY_INCREMENTALS
           value: "${APPLY_INCREMENTALS}"
+        - name: PVC_NAME
+          value: "${pvc_name}"
 ${s3_config}
         command:
         - /bin/bash
@@ -470,6 +510,7 @@ ${s3_config}
           echo "备份日期: \${BACKUP_DATE}"
           echo "命名空间: \${KUBECTL_NAMESPACE}"
           echo "StatefulSet: \${POSTGRES_STATEFULSET_NAME}"
+          echo "PVC: \${PVC_NAME}"
           echo "========================================="
           
           # 安装必要工具（仅在容器内）
@@ -480,7 +521,6 @@ ${s3_config}
           # 如果是远程 S3 模式，安装 mc
           if [ "\${REMOTE_S3_MODE}" = "true" ]; then
             echo "安装 MinIO Client..."
-            # 检测架构
             ARCH=\$(uname -m)
             case \$ARCH in
               x86_64) MC_ARCH="amd64" ;;
@@ -491,16 +531,13 @@ ${s3_config}
             curl -sSL https://dl.min.io/client/mc/release/linux-\${MC_ARCH}/mc -o /usr/local/bin/mc
             chmod +x /usr/local/bin/mc
             
-            # 配置远程 S3
             mc alias set remote "\${S3_ENDPOINT_URL}" "\${S3_ACCESS_KEY}" "\${S3_SECRET_KEY}" --api S3v4
             S3_ALIAS="remote"
           else
-            # 获取 MinIO Pod
             MINIO_POD=\$(kubectl get pods -l "\${MINIO_LABEL}" -n "\${KUBECTL_NAMESPACE}" -o jsonpath='{.items[0].metadata.name}')
             echo "MinIO Pod: \$MINIO_POD"
           fi
           
-          # 检查备份存在性
           echo "检查备份: \${BACKUP_DATE}"
           BACKUP_PATH="\${S3_BUCKET}/\${BACKUP_PREFIX}/\${BACKUP_DATE}"
           
@@ -519,27 +556,25 @@ ${s3_config}
           
           echo "备份验证通过"
           
-          # 停止 PostgreSQL
           echo "停止 PostgreSQL StatefulSet..."
           kubectl scale statefulset "\${POSTGRES_STATEFULSET_NAME}" \
             -n "\${KUBECTL_NAMESPACE}" --replicas=0
           
-          # 等待 Pod 终止
           echo "等待 Pod 终止..."
           kubectl wait --for=delete pod \
             -l "\${POSTGRES_POD_LABEL}" \
             -n "\${KUBECTL_NAMESPACE}" \
             --timeout=300s || true
           
-          # 下载并解压备份（在容器内）
-          echo "下载备份到容器..."
-          RESTORE_DIR="/tmp/restore"
-          rm -rf "\${RESTORE_DIR}"
-          mkdir -p "\${RESTORE_DIR}"
+          echo "准备还原工作目录..."
+          RESTORE_WORK_DIR="/tmp/restore"
+          TARGET_DIR="/restore/target"
+          rm -rf "\${RESTORE_WORK_DIR}"
+          mkdir -p "\${RESTORE_WORK_DIR}"
+          mkdir -p "\${TARGET_DIR}"
           
-          # 获取全量备份文件名
           if [ "\${REMOTE_S3_MODE}" = "true" ]; then
-            FULL_BACKUP=\$(mc ls "\${S3_ALIAS}/\${BACKUP_PATH}/" | grep "full-.*\.tar\.zst" | awk '{print \$NF}' | head -n1)
+            FULL_BACKUP=\$(mc ls "\${S3_ALIAS}/\${BACKUP_PATH}/" | grep "full-.*\\.tar\\.zst" | awk '{print \$NF}' | head -n1)
             
             if [ -z "\$FULL_BACKUP" ]; then
               echo "错误: 未找到全量备份文件"
@@ -548,10 +583,10 @@ ${s3_config}
             fi
             
             echo "下载: \$FULL_BACKUP"
-            mc cp "\${S3_ALIAS}/\${BACKUP_PATH}/\${FULL_BACKUP}" "\${RESTORE_DIR}/\${FULL_BACKUP}"
+            mc cat "\${S3_ALIAS}/\${BACKUP_PATH}/\${FULL_BACKUP}" | zstd -dc --threads=0 | tar -xC "\${RESTORE_WORK_DIR}"
           else
             FULL_BACKUP=\$(kubectl exec -n "\${KUBECTL_NAMESPACE}" "\$MINIO_POD" -- \
-              mc ls "\${BACKUP_PATH}/" | grep "full-.*\.tar\.zst" | awk '{print \$NF}' | head -n1)
+              mc ls "\${BACKUP_PATH}/" | grep "full-.*\\.tar\\.zst" | awk '{print \$NF}' | head -n1)
             
             if [ -z "\$FULL_BACKUP" ]; then
               echo "错误: 未找到全量备份文件"
@@ -561,24 +596,20 @@ ${s3_config}
             
             echo "下载: \$FULL_BACKUP"
             kubectl exec -n "\${KUBECTL_NAMESPACE}" "\$MINIO_POD" -- \
-              mc cat "\${BACKUP_PATH}/\${FULL_BACKUP}" > "\${RESTORE_DIR}/\${FULL_BACKUP}"
+              mc cat "\${BACKUP_PATH}/\${FULL_BACKUP}" | zstd -dc --threads=0 | tar -xC "\${RESTORE_WORK_DIR}"
           fi
           
-          # 解压
-          echo "解压备份..."
-          cd "\${RESTORE_DIR}"
-          zstd -d "\${FULL_BACKUP}" -o backup.tar
-          tar -xf backup.tar
-          
-          BACKUP_DIR=\$(find . -maxdepth 1 -type d -name "*-full-*" ! -name "." | head -n1)
-          if [ -z "\$BACKUP_DIR" ]; then
+          BACKUP_DIR=\$(find "\${RESTORE_WORK_DIR}" -mindepth 1 -maxdepth 1 -type d -name "*-full-*" | head -n1)
+          if [ -z "\${BACKUP_DIR}" ]; then
             echo "错误: 未找到解压后的备份目录"
-            ls -la
+            ls -la "\${RESTORE_WORK_DIR}"
             exit 1
           fi
-          echo "备份已解压: \$BACKUP_DIR"
+          echo "全量备份目录: \${BACKUP_DIR}"
           
-          # 处理增量备份
+          declare -a COMBINE_DIRS
+          COMBINE_DIRS=( "\${BACKUP_DIR}" )
+          
           if [ -n "\${INCREMENTAL_BACKUP}" ] || [ "\${APPLY_INCREMENTALS}" = "true" ]; then
             echo ""
             echo "========================================="
@@ -589,186 +620,93 @@ ${s3_config}
             INCREMENTALS_TO_APPLY=""
             
             if [ "\${APPLY_INCREMENTALS}" = "true" ]; then
-              # 获取所有增量备份并排序
               echo "获取所有增量备份列表..."
               if [ "\${REMOTE_S3_MODE}" = "true" ]; then
                 INCREMENTALS_TO_APPLY=\$(mc ls "\${S3_ALIAS}/\${INCREMENTAL_PATH}/" 2>/dev/null | \
-                  grep "incremental.*\.tar\.zst" | awk '{print \$NF}' | sort)
+                  grep "incremental.*\\.tar\\.zst" | awk '{print \$NF}' | sort)
               else
                 INCREMENTALS_TO_APPLY=\$(kubectl exec -n "\${KUBECTL_NAMESPACE}" "\$MINIO_POD" -- \
                   mc ls "\${INCREMENTAL_PATH}/" 2>/dev/null | \
-                  grep "incremental.*\.tar\.zst" | awk '{print \$NF}' | sort)
+                  grep "incremental.*\\.tar\\.zst" | awk '{print \$NF}' | sort)
               fi
             else
-              # 只应用指定的增量备份
               INCREMENTALS_TO_APPLY="\${INCREMENTAL_BACKUP}"
             fi
             
             if [ -z "\${INCREMENTALS_TO_APPLY}" ]; then
               echo "警告: 未找到增量备份"
             else
-              echo "找到以下增量备份:"
-              echo "\${INCREMENTALS_TO_APPLY}" | nl
+              echo "将按以下顺序应用增量备份:"
+              printf '%s\n' "\${INCREMENTALS_TO_APPLY}" | nl
+              echo "========================================="
               echo ""
               
-              # 应用每个增量备份
-              for inc_backup in \${INCREMENTALS_TO_APPLY}; do
-                echo "处理增量备份: \$inc_backup"
+              idx=1
+              while IFS= read -r inc_backup; do
+                [ -z "\${inc_backup}" ] && continue
+                echo "处理增量备份: \${inc_backup}"
                 
-                # 下载增量备份
+                INC_WORK_DIR="\${RESTORE_WORK_DIR}/incremental_\${idx}"
+                mkdir -p "\${INC_WORK_DIR}"
+                
                 if [ "\${REMOTE_S3_MODE}" = "true" ]; then
-                  mc cp "\${S3_ALIAS}/\${INCREMENTAL_PATH}/\${inc_backup}" "\${RESTORE_DIR}/\${inc_backup}"
+                  mc cat "\${S3_ALIAS}/\${INCREMENTAL_PATH}/\${inc_backup}" | zstd -dc --threads=0 | tar -xC "\${INC_WORK_DIR}"
                 else
                   kubectl exec -n "\${KUBECTL_NAMESPACE}" "\$MINIO_POD" -- \
-                    mc cat "\${INCREMENTAL_PATH}/\${inc_backup}" > "\${RESTORE_DIR}/\${inc_backup}"
+                    mc cat "\${INCREMENTAL_PATH}/\${inc_backup}" | zstd -dc --threads=0 | tar -xC "\${INC_WORK_DIR}"
                 fi
                 
-                # 解压增量备份
-                echo "解压增量备份..."
-                cd "\${RESTORE_DIR}"
-                zstd -d "\${inc_backup}" -o incremental.tar
-                tar -xf incremental.tar
-                
-                # 找到增量备份目录
-                INC_DIR=\$(find . -maxdepth 1 -type d -name "*incremental*" -newer "\${BACKUP_DIR}" | head -n1)
-                
+                INC_DIR=\$(find "\${INC_WORK_DIR}" -mindepth 1 -maxdepth 1 -type d | head -n1)
                 if [ -z "\${INC_DIR}" ]; then
                   echo "错误: 找不到增量备份目录"
                   exit 1
                 fi
                 
-                echo "增量备份目录: \$INC_DIR"
-                
-                # 应用 WAL 文件（如果存在）
-                if [ -d "\${INC_DIR}/pg_wal" ]; then
-                  echo "复制 WAL 文件..."
-                  cp -r "\${INC_DIR}/pg_wal/"* "\${BACKUP_DIR}/pg_wal/" 2>/dev/null || true
-                fi
-                
-                # 应用增量数据文件（覆盖式）
-                echo "应用增量数据..."
-                if command -v rsync >/dev/null 2>&1; then
-                  rsync -av --exclude='pg_wal' "\${INC_DIR}/" "\${BACKUP_DIR}/"
-                else
-                  # 如果 rsync 不可用，使用 cp
-                  cp -rf "\${INC_DIR}/"* "\${BACKUP_DIR}/" 2>/dev/null || true
-                fi
-                
-                # 清理
-                rm -rf "\${INC_DIR}" incremental.tar "\${inc_backup}"
-                
-                echo "✓ 增量备份 \$inc_backup 应用完成"
-                echo ""
-              done
+                COMBINE_DIRS+=( "\${INC_DIR}" )
+                echo "✓ 增量备份 \${inc_backup} 已准备"
+                idx=\$((idx + 1))
+              done <<< "\${INCREMENTALS_TO_APPLY}"
               
               echo "========================================="
-              echo "所有增量备份应用完成"
+              echo "所有增量备份准备完成"
               echo "========================================="
               echo ""
             fi
           fi
           
-          # 获取 PVC
-          echo "获取 PostgreSQL PVC..."
-          # 先尝试通过 label 查找
-          PVC_NAME=\$(kubectl get pvc -n "\${KUBECTL_NAMESPACE}" \
-            -l "\${POSTGRES_POD_LABEL}" \
-            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+          echo "清空目标数据目录..."
+          rm -rf "\${TARGET_DIR:?}/"*
           
-          # 如果找不到，尝试 StatefulSet 的标准命名规则
-          if [ -z "\$PVC_NAME" ]; then
-            # 获取 volumeClaimTemplate 名称
-            VOLUME_NAME=\$(kubectl get statefulset "\${POSTGRES_STATEFULSET_NAME}" -n "\${KUBECTL_NAMESPACE}" \
-              -o jsonpath='{.spec.volumeClaimTemplates[0].metadata.name}' 2>/dev/null || echo "data")
-            PVC_NAME="\${VOLUME_NAME}-\${POSTGRES_STATEFULSET_NAME}-0"
-            
-            # 验证 PVC 是否存在
-            if ! kubectl get pvc "\$PVC_NAME" -n "\${KUBECTL_NAMESPACE}" >/dev/null 2>&1; then
-              echo "错误: 找不到 PVC \$PVC_NAME"
-              echo "可用的 PVC:"
-              kubectl get pvc -n "\${KUBECTL_NAMESPACE}"
-              exit 1
-            fi
+          if ! command -v pg_combinebackup >/dev/null 2>&1; then
+            echo "错误: 找不到 pg_combinebackup"
+            exit 1
           fi
           
-          echo "PVC: \$PVC_NAME"
+          echo "使用 pg_combinebackup 合并备份..."
+          pg_combinebackup -o "\${TARGET_DIR}" "\${COMBINE_DIRS[@]}"
           
-          # 创建临时 Pod 复制数据
-          echo "创建数据复制 Pod..."
-          kubectl run postgres-restore-copy \
-            -n "\${KUBECTL_NAMESPACE}" \
-            --image=busybox \
-            --restart=Never \
-            --overrides="{\"spec\":{\"containers\":[{\"name\":\"copy\",\"image\":\"busybox\",\"command\":[\"sleep\",\"3600\"],\"volumeMounts\":[{\"name\":\"data\",\"mountPath\":\"/data\"}]}],\"volumes\":[{\"name\":\"data\",\"persistentVolumeClaim\":{\"claimName\":\"\${PVC_NAME}\"}}]}}"
+          sync
+          chmod 700 "\${TARGET_DIR}" || true
+          chown -R 999:999 "\${TARGET_DIR}" || true
           
-          # 等待 Pod 就绪
-          kubectl wait --for=condition=ready pod/postgres-restore-copy \
-            -n "\${KUBECTL_NAMESPACE}" --timeout=120s
+          echo "恢复数据已写入 PVC"
           
-          # 清空并复制数据
-          echo "清空现有数据..."
-          kubectl exec -n "\${KUBECTL_NAMESPACE}" postgres-restore-copy -- \
-            sh -c "rm -rf /data/*"
+          rm -rf "\${RESTORE_WORK_DIR}"
           
-          echo "复制还原数据..."
-          echo "源目录: \${BACKUP_DIR}"
-          
-          # 获取源数据大小
-          SOURCE_SIZE=\$(du -sb "\${RESTORE_DIR}/\${BACKUP_DIR}" | awk '{print \$1}')
-          SOURCE_SIZE_MB=\$((SOURCE_SIZE / 1024 / 1024))
-          echo "数据大小: \${SOURCE_SIZE_MB}MB"
-          
-          # 启动后台进度监控
-          (
-            while true; do
-              CURRENT=\$(kubectl exec -n "\${KUBECTL_NAMESPACE}" postgres-restore-copy -- du -sb /data 2>/dev/null | awk '{print \$1}' || echo "0")
-              CURRENT_MB=\$((CURRENT / 1024 / 1024))
-              if [ "\$SOURCE_SIZE" -gt 0 ]; then
-                PERCENT=\$((CURRENT * 100 / SOURCE_SIZE))
-                printf "\r进度: %d/%dMB (%d%%) " \$CURRENT_MB \$SOURCE_SIZE_MB \$PERCENT
-              fi
-              sleep 2
-              # 检查主进程是否还在
-              if ! kill -0 \$\$ 2>/dev/null; then
-                break
-              fi
-            done
-          ) &
-          MONITOR_PID=\$!
-          
-          # 执行复制
-          kubectl cp "\${RESTORE_DIR}/\${BACKUP_DIR}/." "\${KUBECTL_NAMESPACE}/postgres-restore-copy:/data/"
-          
-          # 停止进度监控
-          kill \$MONITOR_PID 2>/dev/null || true
-          wait \$MONITOR_PID 2>/dev/null || true
-          
-          # 最终确认
-          FINAL_SIZE=\$(kubectl exec -n "\${KUBECTL_NAMESPACE}" postgres-restore-copy -- du -sh /data | awk '{print \$1}')
-          echo ""
-          echo "✓ 数据复制完成: \${FINAL_SIZE}"
-          
-          # 设置权限
-          echo "设置权限..."
-          kubectl exec -n "\${KUBECTL_NAMESPACE}" postgres-restore-copy -- \
-            sh -c "chmod 700 /data && chown -R 999:999 /data"
-          
-          # 清理临时 Pod
-          kubectl delete pod postgres-restore-copy -n "\${KUBECTL_NAMESPACE}"
-          
-          # 启动 PostgreSQL
           echo "启动 PostgreSQL..."
           kubectl scale statefulset "\${POSTGRES_STATEFULSET_NAME}" \
             -n "\${KUBECTL_NAMESPACE}" --replicas=1
           
-          # 等待就绪
           echo "等待 PostgreSQL 就绪..."
-          kubectl wait --for=condition=ready pod \
-            -l "\${POSTGRES_POD_LABEL}" \
-            -n "\${KUBECTL_NAMESPACE}" \
-            --timeout=600s
+          if ! kubectl rollout status statefulset/"\${POSTGRES_STATEFULSET_NAME}" \
+            -n "\${KUBECTL_NAMESPACE}" --timeout=600s; then
+            log_warning "StatefulSet 未在超时时间内完成，改为等待 Pod 就绪"
+            kubectl wait --for=condition=ready pod \
+              -l "\${POSTGRES_POD_LABEL}" \
+              -n "\${KUBECTL_NAMESPACE}" \
+              --timeout=300s || true
+          fi
           
-          # 验证
           echo "验证 PostgreSQL..."
           sleep 30
           kubectl exec -n "\${KUBECTL_NAMESPACE}" \
@@ -778,10 +716,9 @@ ${s3_config}
           echo "========================================="
           echo "还原成功完成！"
           echo "========================================="
-          
-          # 清理临时文件
-          rm -rf "\${RESTORE_DIR}"
-          
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /restore/target
         resources:
           requests:
             memory: "512Mi"
@@ -789,10 +726,16 @@ ${s3_config}
           limits:
             memory: "2Gi"
             cpu: "1000m"
+      volumes:
+      - name: postgres-data
+        persistentVolumeClaim:
+          claimName: ${pvc_name}
 EOF
-    
+
     log_success "还原 Job 已创建"
+    JOB_CREATED="true"
 }
+
 
 # 执行还原
 perform_restore() {
@@ -930,7 +873,7 @@ Kubernetes 原生 PostgreSQL 还原脚本 v${VERSION}
 
 高级选项:
     --no-verify               跳过还原后验证
-    --image IMAGE             还原容器镜像 (默认: bitnami/postgresql:16)
+    --image IMAGE             还原容器镜像 (默认: postgres:17)
 
 特性:
     ✅ 零本地依赖（仅需kubectl）

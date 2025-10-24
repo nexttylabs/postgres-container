@@ -124,7 +124,7 @@ cat K8S-NATIVE.md     # K8s原生版本说明
 ## 🔧 环境要求
 
 - Kubernetes 1.20+
-- PostgreSQL 13+ (推荐 16+)
+- PostgreSQL 17+ (推荐 17+)
 - kubectl
 - MinIO 或兼容S3的存储（可选）
 
@@ -146,7 +146,7 @@ spec:
         spec:
           containers:
           - name: backup
-            image: bitnami/postgresql:16
+            image: postgres:17
             command: ["/backup/backup.sh"]
             volumeMounts:
             - name: backup-script
