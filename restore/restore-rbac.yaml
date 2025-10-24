@@ -1,0 +1,90 @@
+---
+# ServiceAccount for PostgreSQL restore operations
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postgres-restore
+  namespace: postgres
+  labels:
+    app.kubernetes.io/name: postgres-restore
+    app.kubernetes.io/component: restore
+
+---
+# Role with permissions needed for restore operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: postgres-restore
+  namespace: postgres
+  labels:
+    app.kubernetes.io/name: postgres-restore
+    app.kubernetes.io/component: restore
+rules:
+# Pod operations - needed to list, create, delete helper pods
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+
+# Pod exec - needed to run commands in MinIO and helper pods
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create"]
+
+# Pod logs - needed to check pod status and logs
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+
+# PVC operations - needed to find and verify data volumes
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims"]
+  verbs: ["get", "list"]
+
+# StatefulSet operations - needed to scale PostgreSQL up/down
+- apiGroups: ["apps"]
+  resources: ["statefulsets"]
+  verbs: ["get", "list", "watch"]
+
+# StatefulSet scale - needed to stop/start PostgreSQL
+- apiGroups: ["apps"]
+  resources: ["statefulsets/scale"]
+  verbs: ["get", "update", "patch"]
+
+# Job operations - the restore Job needs to manage itself
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "create", "delete"]
+
+# Deployment operations - needed to check MinIO status
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list"]
+
+# ConfigMap operations - optional, for configuration
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list"]
+
+# Secret operations - needed to read PostgreSQL password
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+
+---
+# RoleBinding to grant permissions to the ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: postgres-restore
+  namespace: postgres
+  labels:
+    app.kubernetes.io/name: postgres-restore
+    app.kubernetes.io/component: restore
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: postgres-restore
+subjects:
+- kind: ServiceAccount
+  name: postgres-restore
+  namespace: postgres

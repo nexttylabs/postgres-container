@@ -1,0 +1,302 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-restore
+  namespace: postgres
+  labels:
+    app.kubernetes.io/name: postgres-restore
+    app.kubernetes.io/component: restore
+spec:
+  ttlSecondsAfterFinished: 3600  # 1小时后清理Job
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-restore
+    spec:
+      restartPolicy: Never
+      serviceAccountName: postgres-restore  # 需要有权限操作StatefulSet和Pod
+      containers:
+      - name: restore
+        image: bitnami/postgresql:16
+        env:
+        # 备份配置
+        - name: BACKUP_DATE
+          value: "interactive"  # 将被脚本替换为实际日期
+        - name: FORCE_RESTORE
+          value: "false"
+        
+        # PostgreSQL配置
+        - name: POSTGRES_STATEFULSET_NAME
+          value: "postgres"
+        - name: POSTGRES_HOST
+          value: "postgres"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_USER
+          value: "postgres"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: postgres-password
+        
+        # Kubernetes配置
+        - name: KUBECTL_NAMESPACE
+          value: "postgres"
+        - name: POSTGRES_POD_LABEL
+          value: "app.kubernetes.io/name=postgres"
+        - name: MINIO_LABEL
+          value: "app.kubernetes.io/name=minio"
+        
+        # 数据目录配置
+        - name: POSTGRES_DATA_DIR
+          value: "/data"
+        - name: RESTORE_TEMP_DIR
+          value: "/tmp/restore_data"
+        - name: POSTGRES_UID
+          value: "999"
+        - name: POSTGRES_GID
+          value: "999"
+        
+        # 超时配置
+        - name: POSTGRES_INIT_WAIT_TIME
+          value: "30"
+        - name: POD_TERMINATION_TIMEOUT
+          value: "300s"
+        - name: POD_READY_TIMEOUT
+          value: "600s"
+        
+        # S3配置
+        - name: S3_BUCKET
+          value: "backups"
+        - name: BACKUP_PREFIX
+          value: "postgres"
+        
+        # 远程S3配置（可选）
+        - name: REMOTE_S3_MODE
+          value: "false"
+        - name: S3_ENDPOINT_URL
+          value: ""
+        - name: S3_ACCESS_KEY
+          value: ""
+        - name: S3_SECRET_KEY
+          value: ""
+        
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -Eeo pipefail
+          
+          echo "========================================="
+          echo "PostgreSQL 还原任务开始"
+          echo "========================================="
+          echo "备份日期: ${BACKUP_DATE}"
+          echo "命名空间: ${KUBECTL_NAMESPACE}"
+          echo "StatefulSet: ${POSTGRES_STATEFULSET_NAME}"
+          echo "========================================="
+          
+          # 安装必要工具
+          apt-get update -qq && apt-get install -y -qq kubectl curl zstd > /dev/null
+          
+          # 配置kubectl
+          kubectl version --client
+          
+          # 检查MinIO可用性（如果不是远程S3模式）
+          if [ "${REMOTE_S3_MODE}" != "true" ]; then
+            echo "检查MinIO服务..."
+            MINIO_POD=$(kubectl get pods -l "${MINIO_LABEL}" -n "${KUBECTL_NAMESPACE}" -o jsonpath='{.items[0].metadata.name}')
+            
+            if [ -z "$MINIO_POD" ]; then
+              echo "错误: 未找到MinIO Pod"
+              exit 1
+            fi
+            
+            echo "MinIO Pod: $MINIO_POD"
+          fi
+          
+          # 检查备份是否存在
+          echo "检查备份: ${BACKUP_DATE}"
+          
+          if [ "${REMOTE_S3_MODE}" = "true" ]; then
+            # 远程S3模式
+            echo "使用远程S3: ${S3_ENDPOINT_URL}"
+            # TODO: 实现远程S3备份检查
+          else
+            # 本地MinIO模式
+            BACKUP_PATH="${S3_BUCKET}/${BACKUP_PREFIX}/files/${BACKUP_DATE}"
+            
+            kubectl exec -n "${KUBECTL_NAMESPACE}" "$MINIO_POD" -- \
+              mc ls "$BACKUP_PATH/" > /dev/null
+            
+            if [ $? -ne 0 ]; then
+              echo "错误: 备份不存在: ${BACKUP_DATE}"
+              exit 1
+            fi
+            
+            echo "备份验证通过"
+          fi
+          
+          # 停止PostgreSQL StatefulSet
+          echo "停止PostgreSQL StatefulSet..."
+          kubectl scale statefulset "${POSTGRES_STATEFULSET_NAME}" \
+            -n "${KUBECTL_NAMESPACE}" --replicas=0
+          
+          # 等待Pod终止
+          echo "等待Pod终止..."
+          kubectl wait --for=delete pod \
+            -l "${POSTGRES_POD_LABEL}" \
+            -n "${KUBECTL_NAMESPACE}" \
+            --timeout="${POD_TERMINATION_TIMEOUT}" || true
+          
+          # 下载并解压备份
+          echo "准备还原目录..."
+          rm -rf "${RESTORE_TEMP_DIR}"
+          mkdir -p "${RESTORE_TEMP_DIR}"
+          
+          if [ "${REMOTE_S3_MODE}" = "true" ]; then
+            echo "从远程S3下载备份..."
+            # TODO: 实现远程S3下载逻辑
+          else
+            echo "从MinIO下载备份..."
+            
+            # 获取全量备份文件
+            FULL_BACKUP=$(kubectl exec -n "${KUBECTL_NAMESPACE}" "$MINIO_POD" -- \
+              mc ls "${BACKUP_PATH}/" | grep "postgres-full-" | awk '{print $5}' | head -n1)
+            
+            if [ -z "$FULL_BACKUP" ]; then
+              echo "错误: 未找到全量备份"
+              exit 1
+            fi
+            
+            echo "下载全量备份: $FULL_BACKUP"
+            
+            kubectl exec -n "${KUBECTL_NAMESPACE}" "$MINIO_POD" -- \
+              mc cat "${BACKUP_PATH}/${FULL_BACKUP}" > "${RESTORE_TEMP_DIR}/${FULL_BACKUP}"
+            
+            # 解压备份
+            echo "解压备份..."
+            cd "${RESTORE_TEMP_DIR}"
+            zstd -d "${FULL_BACKUP}" -o backup.tar
+            tar -xf backup.tar
+            
+            BACKUP_DIR=$(find . -maxdepth 1 -type d -name "postgres-full-*" | head -n1)
+            
+            if [ -z "$BACKUP_DIR" ]; then
+              echo "错误: 解压失败"
+              exit 1
+            fi
+            
+            echo "备份已解压到: $BACKUP_DIR"
+          fi
+          
+          # 获取PostgreSQL PVC
+          echo "获取PostgreSQL PVC..."
+          PVC_NAME=$(kubectl get pvc -n "${KUBECTL_NAMESPACE}" \
+            -l "${POSTGRES_POD_LABEL}" \
+            -o jsonpath='{.items[0].metadata.name}')
+          
+          if [ -z "$PVC_NAME" ]; then
+            echo "错误: 未找到PVC"
+            exit 1
+          fi
+          
+          echo "PVC: $PVC_NAME"
+          
+          # 创建临时Pod挂载PVC并复制数据
+          echo "创建数据复制Pod..."
+          
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: postgres-restore-copy
+            namespace: ${KUBECTL_NAMESPACE}
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: copy
+              image: busybox
+              command: ['sleep', '3600']
+              volumeMounts:
+              - name: data
+                mountPath: /data
+            volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: ${PVC_NAME}
+          EOF
+          
+          # 等待Pod就绪
+          kubectl wait --for=condition=ready pod/postgres-restore-copy \
+            -n "${KUBECTL_NAMESPACE}" --timeout=60s
+          
+          # 清空现有数据并复制新数据
+          echo "清空现有数据..."
+          kubectl exec -n "${KUBECTL_NAMESPACE}" postgres-restore-copy -- \
+            sh -c "rm -rf /data/*"
+          
+          echo "复制还原数据..."
+          kubectl cp "${RESTORE_TEMP_DIR}/${BACKUP_DIR}/." \
+            "${KUBECTL_NAMESPACE}/postgres-restore-copy:/data/"
+          
+          # 设置权限
+          echo "设置数据目录权限..."
+          kubectl exec -n "${KUBECTL_NAMESPACE}" postgres-restore-copy -- \
+            sh -c "chmod 700 /data && chown -R ${POSTGRES_UID}:${POSTGRES_GID} /data"
+          
+          # 清理临时Pod
+          echo "清理临时Pod..."
+          kubectl delete pod postgres-restore-copy -n "${KUBECTL_NAMESPACE}"
+          
+          # 启动PostgreSQL
+          echo "启动PostgreSQL StatefulSet..."
+          kubectl scale statefulset "${POSTGRES_STATEFULSET_NAME}" \
+            -n "${KUBECTL_NAMESPACE}" --replicas=1
+          
+          # 等待Pod就绪
+          echo "等待PostgreSQL Pod就绪..."
+          kubectl wait --for=condition=ready pod \
+            -l "${POSTGRES_POD_LABEL}" \
+            -n "${KUBECTL_NAMESPACE}" \
+            --timeout="${POD_READY_TIMEOUT}"
+          
+          # 验证PostgreSQL
+          echo "验证PostgreSQL服务..."
+          sleep "${POSTGRES_INIT_WAIT_TIME}"
+          
+          kubectl exec -n "${KUBECTL_NAMESPACE}" \
+            statefulset/"${POSTGRES_STATEFULSET_NAME}" -- \
+            pg_isready -U "${POSTGRES_USER}"
+          
+          if [ $? -eq 0 ]; then
+            echo "========================================="
+            echo "还原成功完成!"
+            echo "========================================="
+          else
+            echo "警告: PostgreSQL服务未就绪，请手动检查"
+            exit 1
+          fi
+          
+          # 清理临时文件
+          rm -rf "${RESTORE_TEMP_DIR}"
+          
+          echo "任务完成"
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        
+        volumeMounts:
+        - name: restore-temp
+          mountPath: /tmp
+      
+      volumes:
+      - name: restore-temp
+        emptyDir:
+          sizeLimit: 10Gi
